@@ -1,0 +1,437 @@
+---
+title: "Prédiction de locations de vélos"
+author: "Molina Rafidison"
+date: "13 Jul 2016"
+output: pdf_document
+---
+
+# PARTIE I : Statistiques descriptives
+
+
+## Préliminaires
+
+### Préparation de l'environnement
+
+Les packages nécessaires à l'analyse déjà installés sont chargés.
+
+```{r packages, message = FALSE, echo = FALSE}
+packages <- c("ggplot2", "gridExtra", "RColorBrewer", "dplyr", "reshape2", "caret")
+sapply(packages, require, character.only = TRUE, quietly = TRUE)
+```
+
+Et le chemin vers le dossier sur lequel est fixé. 
+
+```{r, echo = FALSE}
+path <- getwd()
+```
+
+### Lecture et visualisation de la donnée
+
+La donnée est enregistrée dans une variable; les premières lignes sont affichées.
+
+```{r, echo = FALSE}
+data <- read.csv(file.path(path, "data.csv"), na.strings = c("NA", "#DIV/0!", ""))
+head(data)
+```
+
+Le résumé de la donnée est le suivant :
+
+```{r, echo = FALSE}
+str(data)
+summary(data)
+```
+
+La donnée ne comporte pas de donnée manquante.
+
+### Conversion des classes
+
+Les classes doivent être revues pour que les variables puissent être correctement manipulée par la suite.
+
+```{r, echo = FALSE}
+data$datetime <- as.POSIXct(strptime(data$datetime, format = "%Y-%m-%d %H:%M:%S"))
+data$season <- factor(data$season)
+data$holiday <- factor(data$holiday)
+data$workingday <- factor(data$workingday)
+data$weather <- factor(data$weather)
+```
+
+## Exploration
+
+### Variables cible `count` et temporelle `datetime`
+
+La variable `datetime` est fondamentale puisque c'est sur cette dernière que repose l'ensemble de l'étude.
+Pour faciliter l'analyse, elle est décomposée en heure, jour, mois et année.
+
+```{r, echo = FALSE}
+data$hour <- as.factor(format(data$datetime, "%H:%M"))
+data$day <- as.factor(format(data$datetime, "%d-%m-%Y"))
+data$weekday <- as.factor(format(data$datetime, "%u"))
+data$month <- as.factor(format(data$datetime, "%Y-%m"))
+data$year <- as.factor(format(data$datetime, "%Y"))
+```
+
+Les différentes échelles de temps permettent de créer de nouvelles tables de données contenant le nombre de total de locations mais également la moyenne.
+
+```{r, echo = FALSE}
+perHour <- data %>% group_by(hour) %>% summarize(totalCount = sum(count), meanCount = mean(count))
+perDay <- data %>% group_by(weekday) %>% summarize(totalCount = sum(count), meanCount = mean(count))
+perMonth <- data %>% group_by(month) %>% summarize(totalCount = sum(count), meanCount = mean(count))
+```
+
+Il est intéressant d'observer l'évolution générale de la demande entre le 1er janvier 2011 et le 19 décembre 2012 (Fig.1).
+
+```{r fig1, echo = FALSE, fig.keep = 'none'}
+ggplot(perMonth, aes(x = month)) + 
+    geom_bar(aes(y = meanCount), stat = "Identity", fill = "#f6b058") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "Fig.1 : Locations de vélos par mois entre 2011 et 2012",
+         x = "Mois",
+         y = "Nombre moyen de locations")
+```
+
+Entre 2011 et 2012, le nombre moyen de locations a significativement augmenté.
+D'autre part, le comportement est différent entre les mois de mai et septembre sur les deux années (Fig.2).
+
+```{r fig2, echo = FALSE, fig.keep = 'none'}
+hourPlot <- ggplot(perHour, aes(x = hour)) + 
+    geom_bar(aes(y = meanCount), stat = "Identity", fill = "#f6b058") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "Fig.2 : Locations de vélos par heure",
+         x = "Heure de la journée",
+         y = "Nombre moyen de locations")
+dayPlot <- ggplot(perDay, aes(x = weekday)) + 
+    geom_bar(aes(y = meanCount), stat = "Identity", fill = "#c34242") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "Fig.2 : Locations de vélos par semaine",
+         x = "Jour de la semaine",
+         y = "Nombre moyen de locations")
+
+grid.arrange(hourPlot, dayPlot, ncol = 1)
+```
+
+Un schéma clair se dégage dans l'observation sur une journée. Deux pics sont notables le matin entre 8h et 9h et en fin d'après-midi entre 16h et 20h; le creux se situe entre 23h et 7h du matin.
+D'un point de vue hebdomadaire, les fluctuations sont plus légères. Le dimanche montre toutefois un nombre moindre de locations comparé autres jours de la semaine. Les jours montrant le plus d'utilisations sont le jeudi, le vendredi et le samedi.
+
+**Observations**
+Deux tendances principales se dégagent et cohabitent :
+1. Il y a une augmentation générale du nombre de locations de vélos entre 2011 et 2012. Ceci peut laisser penser que le nombre d'abonnés augmente et/ou que la location de vélo se répand.
+2. Il y a un cycle journalier qui se dessine. De la même manière, ceci peut laisser penser que les pics correspondent aux heures de pointes de journées de travail. Il serait intéressant d'étudier la différence d'utilisation entre les journées travaillées et celles qui ne le sont pas, et ainsi voir s'il existe un cycle hebdomadaire évident.
+
+### Variables catégorielles `season`, `holiday`, `workingday` et `weather`
+
+L'analyse se fait dans un premiers temps sur les variables liées au travail (jours fériés, travaillés, non travaillés). Les deux variables concernées - `holiday` et `working day` sont des variables *dummies* (Fig.3).
+
+```{r fig3, echo = FALSE, fig.keep = 'none'}
+weekPattern <- data %>% group_by(hour, weekday, workingday) %>% summarize(meanCount = mean(count))
+levels(weekPattern$workingday) = c("Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche")
+
+ggplot(weekPattern, aes(x = hour, fill = workingday)) + 
+    geom_bar(aes(y = meanCount), stat = "Identity") +
+    facet_grid(weekday ~ .) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    scale_fill_discrete(name = "Jour travaillé",
+                        labels = c("Non", "Oui")) +
+    labs(title = "Fig.3 : Locations de vélos sur une semaine",
+         x = "Heure de la journée",
+         y = "Nombre moyen de locations")
+```
+
+Le cycle hebdomadaire se démarque par un changement de comportement entre les week-ends et les jours de semaine : 
+- Les usagers ne travaillant pas le vendredi respectent un comportement similaire à ceux qui travaillent. 
+- En revanche, le lundi est plus équilibré en mélangeant les deux comportements.
+- Le mercredi est le jour le plus curieux : la location de vélos est plus massive que les autres jours pour les usagers ne travaillant. Un pic est également observé entre 20h et 23h.
+
+Le comportement entre un jour férié et un jour non travaillé est-il le même (Fig.4) ?
+
+```{r fig4, echo = FALSE, fig.keep = 'none'}
+holiday <- data %>% filter(holiday == 1) %>% group_by(hour) %>% summarize(meanCount = mean(count))
+nonWorkingday <- data %>% filter(workingday == 0) %>% group_by(hour) %>% summarize(meanCount = mean(count))
+
+holidayPlot <- ggplot(holiday, aes(x = hour)) + 
+    geom_bar(aes(y = meanCount), stat = "Identity", fill = "#f6b058") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "Fig.4 : Locations de vélos les jours fériés",
+         x = "Heure de la journée",
+         y = "Nombre moyen de locations")
+nonWDPlot <- ggplot(nonWorkingday, aes(x = hour)) + 
+    geom_bar(aes(y = meanCount), stat = "Identity", fill = "#c34242") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "Fig.4 : Locations de vélos les jours non travaillés",
+         x = "Heure de la journée",
+         y = "Nombre moyen de locations")
+
+grid.arrange(holidayPlot, nonWDPlot, ncol = 1)
+```
+
+Le comportement est différent. L'activité lors de jours fériés présente des pics similaires jours travaillés et est moins élevée que lors des jours non travaillés. La tendance est néanmoins plus lisse que lors de jours travaillés.
+
+*Note : L'étude des jours fériés montre que la donnée provient certainement des États-Unis. Ceci pourrait expliquer des comportements dans les usages qui seraient spécifiques au pays ou même à l'état, la ville, etc...*
+
+Les deux autres variables à étudier sont liées au temps, `season` et `weather`. Elles comportent chacunes quatre modalités. La variable `temp` est intégrée à cette exploration étant donné l'étude sur la météorologie (Fig.5).
+
+```{r fig5, echo = FALSE, fig.keep = 'none'}
+weather <- data %>% group_by(temp, weather, season) %>% summarize(meanCount = mean(count))
+levels(weather$season) = c("Printemps", "Été", "Automne", "Hiver")
+
+ggplot(weather, aes(x = temp, fill = weather)) + 
+    geom_bar(aes(y = meanCount), stat = "Identity") +
+    scale_fill_brewer(palette = "RdYlBu") +
+    facet_grid(season ~ .) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "Fig.5 : Locations de vélos selon la température, la météorologie et la saison",
+         x = "Température",
+         y = "Nombre moyen de locations")
+```
+
+Les interprétations de ce graphique sont les suivantes :
+- Le printemps représente la saison la plus froide, ce qui peut expliquer le faible nombre de locations. 
+- Les usagers sont plus actifs lors des saisons les plus chaudes qui sont l'automne et l'été. Ils sont également plus nombreux en hiver qu'au printemps.
+- Le vélo partagé est particulièrement plebiscité entre 19°C et 35°C environ.
+- Les locations sont plus nombreuses lorsque le temps est correct (rouge et orange) et plus faibles par temps de légère pluie/neige. La pluie freine moins les usagers lorsqu'il fait chaud.
+
+**Observations**
+L'heure, le jour de la semaine, la saison et le temps semblent jouer un rôle important dans l'utilisation de vélos partagés. Les jours de vacances scolaires (fériés) peuvent paraître moins déterminants.
+
+### Variables continues `temp`, `atemp`, `humidity` et `windspeed`
+
+Précédemment étudiée, la température `temp` doit maintenant être comparée à la température ressentie `atemp` afin de déterminer si l'une a plus d'influence sur l'autre (Fig.6).
+
+```{r fig6, echo = FALSE, fig.keep = 'none'}
+summary(data[, 6:7])
+cor(data$temp, data$atemp)
+
+tempColPlot <- qplot(data$temp, data$atemp)
+tempPlot <- ggplot(data = data) +
+    geom_density(aes(temp), fill = "steelblue", alpha = .5) +
+    geom_density(aes(atemp), fill = "coral", alpha = .5) +
+    labs(title = "Fig.6 : Densité de la température et température ressentie",
+         x = "Température",
+         y = "Nombre moyen de locations")
+
+grid.arrange(tempColPlot, tempPlot, ncol = 2)
+```
+
+En bleu est représenté la température et en orange, la température ressentie.
+Les deux variables sont très largement corrélées même si les températures ressenties fluctuent davantage. Les températures sont généralement senties comme étant plus chaudes qu'elles ne le sont. 
+En revanche, certains points sont étrangement éloignés et demandent d'y jeter un œil.
+
+```{r, echo = FALSE}
+data %>% 
+    select(day, temp, atemp, humidity, windspeed, count) %>% 
+    filter(temp > 25, atemp < 15) %>%
+    group_by(day) %>%
+    summarize(temp = mean(temp), 
+              atemp = mean(atemp), 
+              humidity = mean(humidity), 
+              windspeed = mean(windspeed), 
+              count = mean(count))
+```
+
+Il s'agit d'un jour en particulier : le 17 août 2012. Sur l'ensemble de la journée, l'humidité est légèrement élevée, le vent faible. Il pourrait s'agir d'une erreur sur la température ressentie.
+
+```{r, echo = FALSE}
+summary(data[, 8:9])
+
+cor(data$count, data$humidity)
+cor(data$count, data$windspeed)
+```
+
+De manière générale, l'humidité et la vitesse du vent semblent d'avoir qu'un impact léger sur le nombre de locations de vélos.
+
+```{r, echo = FALSE}
+humidityWeather <- data %>% group_by(weather) %>% summarize(meanHumidity = mean(humidity), totalCount = sum(count))
+humidityWeather
+```
+
+D'autre part, d'après le tableau précédent, il semble que le taux d'humidité soit lié la variable `weather`. En effet, cette dernière indique la présence de pluie.
+Dans le cadre de cet exercice, la variable `windspeed` ne sera pas étudiée davantage.
+
+## Réponses
+
+### Variables influentes
+
+L'exploration de la donnée montre que la demande en vélos semble influencée par l'heure, le jour, la saison, le temps, la température.
+
+Les variables `casual` et `registered` peuvent être étudiées de plus près pour déterminer la proportion d'utilisateurs habituels ou ponctuels.
+
+### Variables `age` et `sexe`
+
+Avec les informations concernant l'âge et le sexe des utilisateurs abonnés, la procédure statistique à mener pour comparer les distributions est la suivante.
+
+1. Il y a deux populations avec d'un côté la distribution en âge des hommes et la distribution en âge des femmes de l'autre. Les deux échantillons proviennent d'une même population. Ils sont donc considérés comme indépendants.
+
+2. Il peut être intéressant de réaliser un graphique représentant les densités des deux échantillons superposées pour comparer leurs distributions. Un graphique avec les boxplots associés donneraient également plus d'informations sur les quantiles.
+
+3. L'âge est considéré comme une variable continue. Pour comparer les deux échantillons, il faut réaliser un test de Kolmogorov-Smirnov à deux échantillons (two-sample Kolmogorov-Smirnov) via la fonction `ks.test`.
+L'hypothèse nulle est : "Les deux échantillons ont la même distribution".
+
+Le résultat du test donnera la valeur p-value qui permettra de dire si l'hypothèse nulle doit être rejetée ou pas. En considérant un niveau d'importance de 5%, si la p-value est inférieure à 0.05 alors l'hypothèse nulle est rejetée et les deux populations n'ont pas la même distribution, donc non identiques.
+
+
+
+# PARTIE II : Machine learning
+
+
+## Sélection de variables
+
+Comme vu précédemment, seules quelques variables sont gardées. 
+
+```{r, echo = FALSE}
+newData <- data %>% select(season, workingday, temp, humidity, hour, weekday, year, count)
+
+## Factorisation de la variable horaire
+newData$hour <- factor(as.integer(newData$hour))
+```
+
+### Cross-validation
+
+Le nouveau dataset est divisé en trois parties dans le cadre d'une validation croisée : un set d'entraînement (`train`), un set de validation (`valid`) et un set de test (`test`).
+
+```{r, echo = FALSE}
+set.seed(2016)
+inTrain <- createDataPartition(y = newData$count, p = .8, list = FALSE)
+
+forTrain <- newData[inTrain, ]
+
+test <- newData[-inTrain, -8]
+## Variables catégoriques converties en dummies
+testMatrix = model.matrix( ~ . -1, test)
+testLabel <- newData[-inTrain, 8]
+
+outValid <- createDataPartition(y = forTrain$count, p = .8, list = FALSE)
+
+train <- forTrain[outValid, -8]
+## Variables catégoriques converties en dummies
+trainMatrix = model.matrix( ~ . -1, train)
+trainLabel <- forTrain[outValid, 8]
+
+valid <- forTrain[-outValid, -8]
+## Variables catégoriques converties en dummies
+validMatrix = model.matrix( ~ . -1, valid)
+validLabel <- forTrain[-outValid, 8]
+
+dim(train); dim(valid)
+```
+
+Un paramètre de cross-validation automatique est utilisé une nouvelle fois pour être utilisé lors de l'entraînement du modèle.
+
+```{r, echo = FALSE}
+tControl <- trainControl(method = "cv", number = 2)
+```
+
+## Random Forest
+
+### Entraînement
+
+La méthode Random Forest est utilisée afin de prédire le nombre de locations de vélos par heure. La technique recherchée est celle de la régression.
+
+Le paramètre `mtry` représente le nombre de variables aléatoires qui sont sélectionnées et testées à chaque embranchement. Son choix est sensible. Pour le définir et laisser de la liberté, la moitié du nombre de prédicteur a d'abord été testé. Finalement, le choix s'est arrêté sur 28 prédicteurs qui donne une meilleure performance.
+
+```{r, echo = FALSE}
+rfGrid <- expand.grid(mtry = 28)
+```
+
+Pour l'entraînement, le nombre d'arbres permis (ntree) est fixé à 500 par défaut et l'erreur moyenne quadratique (RMSE) est choisie comme critère de performance.
+Le RMSE permet de mesurer la dérivation moyenne des valeurs prédites des valeurs observées. Plus le résultat est bas, plus les prédictions se rapprochent des observations.
+
+```{r, cache = TRUE, echo = FALSE}
+set.seed(2016)
+
+rfModel <- train(x = trainMatrix,
+                   y = trainLabel,
+                   method = "rf",
+                   ntree = 500,
+                   trControl = tControl,
+                   tuneGrid = rfGrid,
+                   importance = TRUE)
+## RMSE : 66.5239
+## NRMSE : 0.0687
+
+rfModel
+rfModel$finalModel
+```
+
+### Validation
+
+Le modèle est testé sur le set de validation avant d'être appliqué sur le test final. Cela permet d'observer s'il n'y a pas de cas de surentraîenement (overfitting).
+
+```{r, message = FALSE, echo = FALSE}
+validPred <- as.integer(predict.train(rfModel, newdata = validMatrix))
+
+validRMSE <- sqrt(sum((validPred - validLabel)^2)/length(validLabel))
+validRMSE
+
+## NRMSE <- validRMSE/(max(validLabel)-min(validLabel))
+## NRMSE : 0.0365
+```
+
+Le score RMSE est moins élevé que celui de l'entraînement et est, de manière générale, satisfaisant. 
+Cela indique également qu'il n'y a pas d'overfitting.
+
+### Importance des variables
+
+Les variables sont rassemblées dans un graphique par ordre d'importance dans le modèle. 
+
+```{r fig7, echo = FALSE, fig.keep = 'none'}
+rfModelVarImp <- varImp(rfModel)
+dotPlot(rfModelVarImp)
+```
+
+Seule la variable `weekday` n'apparait pas dans ce graphique.
+
+# Prédiction
+
+## Prédictions finales
+
+Le modèle est appliqué au set final à prédire.
+
+```{r, echo = FALSE}
+testPred <- predict.train(rfModel, newdata = testMatrix)
+```
+
+## Comparaison
+
+```{r, echo = FALSE}
+testRMSE <- sqrt(sum((testPred-testLabel)^2 )/length(testLabel))
+testRMSE
+
+## NRMSE <- validRMSE/(max(validLabel)-min(validLabel))
+## NRMSE : 0.0365
+```
+
+Le résultat des prédiction est conforme à ce qu'il s'est passé sur le set de validation.
+
+## Pistes d'amélioration
+
+Voici quelques pistes qui mériteraient d'être prises en compte pour l'amélioration du modèle :
+- Étudier davantage les variables importantes et améliorer la sélection de variables;
+- Affiner le nombre de prédicteurs sélectionnés pour le `mtry`;
+- Analyser de manière plus approfondie le comportement du modèle via notamment la fonction de distribution cumulative empirique permettant de réaliser des graphiques.
+
+
+\pagebreak
+  
+# Appendix
+
+Les graphiques cités dans le rapport sont disponibles dans cette annexe.
+
+```{r, ref.label = 'fig1', results = 'markup', fig.align = 'center', fig.width = 5, fig.height = 3, echo = FALSE}
+```
+
+```{r, ref.label = 'fig2', results = 'markup', fig.align = 'center', fig.width = 5, fig.height = 3, echo = FALSE}
+```
+
+```{r, ref.label = 'fig3', results = 'markup', fig.align = 'center', fig.width = 5, fig.height = 3, echo = FALSE}
+```
+
+```{r, ref.label = 'fig4', results = 'markup', fig.align = 'center', fig.width = 5, fig.height = 3, echo = FALSE}
+```
+
+```{r, ref.label = 'fig5', results = 'markup', fig.align = 'center', fig.width = 5, fig.height = 3, echo = FALSE}
+```
+
+```{r, ref.label = 'fig6', results = 'markup', fig.align = 'center', fig.width = 5, fig.height = 3, echo = FALSE}
+```
+
+```{r, ref.label = 'fig7', results = 'markup', fig.align = 'center', fig.width = 5, fig.height = 3, echo = FALSE}
+```
